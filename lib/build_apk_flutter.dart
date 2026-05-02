@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:archive/archive.dart';
 
 class BuildApkFlutter extends StatefulWidget {
   final String? sessionKey;
@@ -33,9 +34,12 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
   String? _selectedZipFileName;
   
   bool _isLoading = false;
+  bool _isBuildRunning = false;
   String? _errorMessage;
   String? _successMessage;
   String? _apkDownloadUrl;
+  String? _currentRepoName;
+  String? _currentUsername;
   List<String> _buildLogs = [];
   ScrollController _terminalScrollController = ScrollController();
 
@@ -91,7 +95,10 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       iOS: iosSettings,
     );
     
-    await flutterLocalNotificationsPlugin.initialize(initSettings);
+    await flutterLocalNotificationsPlugin.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: _onNotificationTap,
+    );
     
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
       'build_channel',
@@ -105,10 +112,54 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
         ?.createNotificationChannel(channel);
   }
 
+  void _onNotificationTap(NotificationResponse response) {
+    if (response.payload == 'download_apk') {
+      _showDownloadDialog();
+    }
+  }
+
+  void _showDownloadDialog() {
+    if (_apkDownloadUrl == null) return;
+    
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: cardDark,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.download, color: Colors.green),
+            SizedBox(width: 10),
+            Text("APK Siap Download!", style: TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: const Text(
+          "Build APK telah selesai. Download dan install sekarang?",
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Nanti", style: TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _downloadAPK();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: successGreen),
+            child: const Text("DOWNLOAD"),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showNotification({
     required String title,
     required String body,
     required bool isSuccess,
+    String? payload,
   }) async {
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'build_channel',
@@ -129,6 +180,7 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       title,
       body,
       details,
+      payload: payload ?? (isSuccess ? 'download_apk' : null),
     );
   }
 
@@ -149,21 +201,20 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("APK telah selesai dibangun!", style: TextStyle(color: Colors.white70)),
+            const Text("APK telah selesai dibuild!", style: TextStyle(color: Colors.white70)),
             const SizedBox(height: 16),
-            if (_apkDownloadUrl != null)
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.download),
-                  label: const Text("DOWNLOAD & INSTALL"),
-                  style: ElevatedButton.styleFrom(backgroundColor: successGreen),
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _downloadAPK();
-                  },
-                ),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.download),
+                label: const Text("Download & Install"),
+                style: ElevatedButton.styleFrom(backgroundColor: successGreen),
+                onPressed: () {
+                  Navigator.pop(context);
+                  _downloadAPK();
+                },
               ),
+            ),
           ],
         ),
         actions: [
@@ -259,7 +310,7 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
               await Share.shareXFiles([XFile(apkFile.path)], text: 'APK File');
             },
             style: ElevatedButton.styleFrom(backgroundColor: successGreen),
-            child: const Text("BAGIKAN"),
+            child: const Text("Bagikan"),
           ),
         ],
       ),
@@ -277,6 +328,7 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
   }
 
   void _addBuildLog(String message, {bool isError = false, bool isSuccess = false}) {
+    if (!mounted) return;
     setState(() {
       _buildLogs.add("[${DateTime.now().toString().substring(11, 19)}] ${isError ? '❌ ' : isSuccess ? '✅ ' : '➜ '}$message");
     });
@@ -324,12 +376,20 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       return;
     }
 
+    if (_isBuildRunning) {
+      _addBuildLog("Build sedang berjalan!", isError: true);
+      return;
+    }
+
     setState(() {
       _isLoading = true;
+      _isBuildRunning = true;
       _errorMessage = null;
       _successMessage = null;
       _apkDownloadUrl = null;
       _buildLogs = [];
+      _currentRepoName = null;
+      _currentUsername = username;
     });
 
     _addBuildLog("Memulai build APK dari ZIP: $_selectedZipFileName");
@@ -339,6 +399,7 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       _addBuildLog("Membuat repository GitHub...");
       
       final repoName = "flutter_build_${DateTime.now().millisecondsSinceEpoch}";
+      _currentRepoName = repoName;
       
       final createRepoResponse = await http.post(
         Uri.parse("https://api.github.com/user/repos"),
@@ -362,6 +423,10 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
           body: "Gagal membuat repository GitHub!",
           isSuccess: false,
         );
+        setState(() {
+          _isLoading = false;
+          _isBuildRunning = false;
+        });
         return;
       }
       _addBuildLog("Repository berhasil dibuat: $repoName ✅", isSuccess: true);
@@ -391,6 +456,10 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
           body: "Gagal upload ZIP ke GitHub!",
           isSuccess: false,
         );
+        setState(() {
+          _isLoading = false;
+          _isBuildRunning = false;
+        });
         return;
       }
       _addBuildLog("ZIP berhasil diupload ✅", isSuccess: true);
@@ -467,90 +536,109 @@ jobs:
         _addBuildLog("Build dimulai! Menunggu proses selesai (3-8 menit)...", isSuccess: true);
         await _showNotification(
           title: "Build APK Dimulai",
-          body: "Proses build APK sedang berjalan.",
+          body: "Proses build APK sedang berjalan. Anda akan diberitahu saat selesai.",
           isSuccess: true,
         );
+        
+        setState(() { _isLoading = false; });
         
         bool buildCompleted = false;
         int attempts = 0;
         
-        while (!buildCompleted && attempts < 120) {
+        while (!buildCompleted && attempts < 120 && _isBuildRunning) {
           await Future.delayed(const Duration(seconds: 5));
           
-          final runsResponse = await http.get(
-            Uri.parse("https://api.github.com/repos/$username/$repoName/actions/runs?per_page=1"),
-            headers: {'Authorization': 'token $ghpToken'},
-          );
+          if (!_isBuildRunning) break;
           
-          if (runsResponse.statusCode == 200) {
-            final runsData = jsonDecode(runsResponse.body);
-            if (runsData['workflow_runs'] != null && runsData['workflow_runs'].isNotEmpty) {
-              final latestRun = runsData['workflow_runs'][0];
-              final status = latestRun['status'];
-              final conclusion = latestRun['conclusion'];
-              
-              if (status == 'completed') {
-                buildCompleted = true;
-                if (conclusion == 'success') {
-                  _addBuildLog("Build berhasil! Mengambil APK...", isSuccess: true);
-                  
-                  final artifactsResponse = await http.get(
-                    Uri.parse("https://api.github.com/repos/$username/$repoName/actions/runs/${latestRun['id']}/artifacts"),
-                    headers: {'Authorization': 'token $ghpToken'},
-                  );
-                  
-                  if (artifactsResponse.statusCode == 200) {
-                    final artifactsData = jsonDecode(artifactsResponse.body);
-                    if (artifactsData['artifacts'] != null && artifactsData['artifacts'].isNotEmpty) {
-                      final artifact = artifactsData['artifacts'][0];
-                      final downloadUrl = artifact['archive_download_url'];
-                      
-                      setState(() {
-                        _apkDownloadUrl = downloadUrl;
-                        _successMessage = "APK siap didownload!";
-                      });
-                      _addBuildLog("APK siap didownload!", isSuccess: true);
-                      
-                      await _showNotification(
-                        title: "✅ Build APK Berhasil!",
-                        body: "APK telah selesai dibangun.",
-                        isSuccess: true,
-                      );
-                      
-                      _showSuccessDialog();
-                    } else {
-                      _addBuildLog("Tidak ada artifact ditemukan", isError: true);
-                      await _showNotification(
-                        title: "Build APK Gagal",
-                        body: "Tidak ada artifact ditemukan.",
-                        isSuccess: false,
-                      );
+          try {
+            final runsResponse = await http.get(
+              Uri.parse("https://api.github.com/repos/$username/$repoName/actions/runs?per_page=1"),
+              headers: {'Authorization': 'token $ghpToken'},
+            );
+            
+            if (runsResponse.statusCode == 200) {
+              final runsData = jsonDecode(runsResponse.body);
+              if (runsData['workflow_runs'] != null && runsData['workflow_runs'].isNotEmpty) {
+                final latestRun = runsData['workflow_runs'][0];
+                final status = latestRun['status'];
+                final conclusion = latestRun['conclusion'];
+                
+                if (status == 'completed') {
+                  buildCompleted = true;
+                  if (conclusion == 'success') {
+                    _addBuildLog("Build berhasil! Mengambil APK...", isSuccess: true);
+                    
+                    final artifactsResponse = await http.get(
+                      Uri.parse("https://api.github.com/repos/$username/$repoName/actions/runs/${latestRun['id']}/artifacts"),
+                      headers: {'Authorization': 'token $ghpToken'},
+                    );
+                    
+                    if (artifactsResponse.statusCode == 200) {
+                      final artifactsData = jsonDecode(artifactsResponse.body);
+                      if (artifactsData['artifacts'] != null && artifactsData['artifacts'].isNotEmpty) {
+                        final artifact = artifactsData['artifacts'][0];
+                        final downloadUrl = artifact['archive_download_url'];
+                        
+                        if (mounted) {
+                          setState(() {
+                            _apkDownloadUrl = downloadUrl;
+                            _successMessage = "APK siap didownload!";
+                            _isBuildRunning = false;
+                          });
+                        }
+                        _addBuildLog("APK siap didownload!", isSuccess: true);
+                        
+                        await _showNotification(
+                          title: "✅ Build APK Berhasil!",
+                          body: "APK telah selesai dibuild. Klik notifikasi untuk download.",
+                          isSuccess: true,
+                          payload: 'download_apk',
+                        );
+                        
+                        if (mounted) {
+                          _showSuccessDialog();
+                        }
+                      } else {
+                        _addBuildLog("Tidak ada artifact ditemukan", isError: true);
+                        await _showNotification(
+                          title: "Build APK Gagal",
+                          body: "Tidak ada artifact ditemukan.",
+                          isSuccess: false,
+                        );
+                        setState(() { _isBuildRunning = false; });
+                      }
                     }
+                  } else {
+                    _addBuildLog("Build gagal dengan status: $conclusion.", isError: true);
+                    await _showNotification(
+                      title: "❌ Build APK Gagal",
+                      body: "Build gagal: $conclusion",
+                      isSuccess: false,
+                    );
+                    _showErrorDialog("Build gagal: $conclusion\nCek GitHub Actions.");
+                    setState(() { _isBuildRunning = false; });
                   }
                 } else {
-                  _addBuildLog("Build gagal dengan status: $conclusion.", isError: true);
-                  await _showNotification(
-                    title: "❌ Build APK Gagal",
-                    body: "Build gagal: $conclusion",
-                    isSuccess: false,
-                  );
-                  _showErrorDialog("Build gagal: $conclusion\nCek GitHub Actions.");
+                  if (attempts % 12 == 0) {
+                    _addBuildLog("Build sedang berjalan... (${attempts * 5}s)");
+                  }
                 }
-              } else {
-                _addBuildLog("Build sedang berjalan... (${attempts * 5}s)");
               }
             }
+          } catch (e) {
+            _addBuildLog("Error checking build status: $e", isError: true);
           }
           attempts++;
         }
         
-        if (!buildCompleted) {
+        if (!buildCompleted && _isBuildRunning) {
           _addBuildLog("Build memakan waktu lama. Cek GitHub Actions secara manual.", isError: true);
           await _showNotification(
             title: "Build APK Timeout",
-            body: "Build memakan waktu lama.",
+            body: "Build memakan waktu lama. Cek GitHub Actions secara manual.",
             isSuccess: false,
           );
+          setState(() { _isBuildRunning = false; });
         }
       } else {
         _addBuildLog("Gagal menjalankan workflow! Status: ${triggerResponse.statusCode}", isError: true);
@@ -559,6 +647,7 @@ jobs:
           body: "Gagal menjalankan workflow!",
           isSuccess: false,
         );
+        setState(() { _isBuildRunning = false; });
       }
       
     } catch (e) {
@@ -569,8 +658,14 @@ jobs:
         isSuccess: false,
       );
       _showErrorDialog("Terjadi error: $e");
+      setState(() { _isBuildRunning = false; });
     } finally {
-      setState(() { _isLoading = false; });
+      if (mounted) {
+        setState(() { 
+          _isLoading = false;
+          _isBuildRunning = false;
+        });
+      }
     }
   }
   
@@ -602,24 +697,71 @@ jobs:
     setState(() { _isLoading = true; });
     
     try {
-      _addBuildLog("Mengunduh APK...");
-      final response = await http.get(Uri.parse(_apkDownloadUrl!));
-      final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/app_${DateTime.now().millisecondsSinceEpoch}.apk');
-      await file.writeAsBytes(response.bodyBytes);
-      _addBuildLog("APK berhasil diunduh!", isSuccess: true);
+      _addBuildLog("Mengunduh APK dari: $_apkDownloadUrl");
       
-      // ✅ Install APK langsung
-      await _installAPK(file);
+      final token = _ghpTokenController.text.trim();
+      
+      final response = await http.get(
+        Uri.parse(_apkDownloadUrl!),
+        headers: {
+          'Authorization': 'token $token',
+          'Accept': 'application/vnd.github.v3+json',
+        },
+      );
+      
+      if (response.statusCode != 200) {
+        _addBuildLog("Gagal download! Status: ${response.statusCode}", isError: true);
+        return;
+      }
+      
+      _addBuildLog("Ukuran download: ${response.bodyBytes.length} bytes");
+      
+      if (response.bodyBytes.length < 10000) {
+        _addBuildLog("File terlalu kecil (corrupt)!", isError: true);
+        _addBuildLog("Coba download manual dari GitHub Actions.", isError: true);
+        return;
+      }
+      
+      final tempDir = await getTemporaryDirectory();
+      final zipFile = File('${tempDir.path}/artifact_${DateTime.now().millisecondsSinceEpoch}.zip');
+      await zipFile.writeAsBytes(response.bodyBytes);
+      
+      _addBuildLog("Ekstrak ZIP...");
+      
+      final bytes = await zipFile.readAsBytes();
+      final archive = ZipDecoder().decodeBytes(bytes);
+      
+      File? apkFile;
+      for (final file in archive) {
+        if (file.name.endsWith('.apk') && !file.isFile) {
+          final extractedFile = File('${tempDir.path}/${file.name}');
+          await extractedFile.writeAsBytes(file.content as List<int>);
+          apkFile = extractedFile;
+          _addBuildLog("APK ditemukan: ${file.name}", isSuccess: true);
+          break;
+        }
+      }
+      
+      if (apkFile == null) {
+        _addBuildLog("Tidak ditemukan APK dalam ZIP", isError: true);
+        return;
+      }
+      
+      final fileSize = await apkFile.length();
+      _addBuildLog("Ukuran APK: ${(fileSize / 1024 / 1024).toStringAsFixed(2)} MB", isSuccess: true);
+      
+      await _installAPK(apkFile);
       
     } catch (e) {
       _addBuildLog("Error download APK: $e", isError: true);
+      _addBuildLog("Coba download manual dari GitHub Actions.", isError: true);
     } finally {
-      setState(() { _isLoading = false; });
+      if (mounted) {
+        setState(() { _isLoading = false; });
+      }
     }
   }
 
-  // ✅ METHOD INSTALL APK
   Future<void> _installAPK(File apkFile) async {
     try {
       _addBuildLog("Meminta izin instalasi...");
@@ -646,7 +788,7 @@ jobs:
   }
 
   Widget _buildTerminal() {
-    if (_buildLogs.isEmpty && !_isLoading) return const SizedBox.shrink();
+    if (_buildLogs.isEmpty && !_isLoading && !_isBuildRunning) return const SizedBox.shrink();
     
     return Container(
       width: double.infinity,
@@ -665,6 +807,13 @@ jobs:
                 Container(width: 12, height: 12, decoration: const BoxDecoration(color: Colors.green, shape: BoxShape.circle)),
                 const SizedBox(width: 12),
                 const Text("Build Logs", style: TextStyle(color: Colors.white70)),
+                const Spacer(),
+                if (_isBuildRunning)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                  ),
               ],
             ),
           ),
@@ -694,157 +843,170 @@ jobs:
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: primaryDark,
-      appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(color: accentBlue.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
-              child: const Icon(Icons.folder_zip, color: Colors.white),
+    return PopScope(
+      canPop: !_isBuildRunning,
+      onPopInvoked: (didPop) {
+        if (_isBuildRunning) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Build sedang berjalan, tidak bisa keluar!"),
+              backgroundColor: Colors.red,
             ),
-            const SizedBox(width: 12),
-            const Text("Flutter APK Builder", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-          ],
-        ),
+          );
+        }
+      },
+      child: Scaffold(
         backgroundColor: primaryDark,
-        elevation: 0,
-      ),
-      body: FadeTransition(
-        opacity: _fadeAnimation,
-        child: SlideTransition(
-          position: _slideAnimation,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(16),
-                    gradient: LinearGradient(colors: [primaryBlue, accentBlue]),
-                  ),
-                  child: Column(
-                    children: [
-                      AnimatedBuilder(
-                        animation: _pulseAnimation,
-                        builder: (context, _) => Transform.scale(
-                          scale: _pulseAnimation.value,
-                          child: Container(
-                            width: 80, height: 80,
-                            decoration: BoxDecoration(color: Colors.white24, shape: BoxShape.circle),
-                            child: const Icon(Icons.folder_zip, color: Colors.white, size: 40),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      const Text("Builder APK Flutter", style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 8),
-                      const Text("Build APK dari file ZIP", style: TextStyle(color: Colors.white70)),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(color: cardDark, borderRadius: BorderRadius.circular(16)),
-                  child: Column(
-                    children: [
-                      GestureDetector(
-                        onTap: _pickZipFile,
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: cardDarker,
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: accentBlue.withOpacity(0.5)),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.folder_zip, color: accentBlue, size: 30),
-                              const SizedBox(width: 16),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      _selectedZipFileName ?? "Pilih File ZIP",
-                                      style: TextStyle(
-                                        color: _selectedZipFileName != null ? Colors.white : Colors.white54,
-                                        fontSize: 14,
-                                      ),
-                                    ),
-                                    if (_selectedZipFileName != null)
-                                      Text(
-                                        "Klik untuk ganti file",
-                                        style: TextStyle(color: accentBlue, fontSize: 11),
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              Icon(Icons.upload_file, color: accentBlue),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      _buildField(_ghpTokenController, "GitHub Token (ghp_)", Icons.vpn_key, obscure: true),
-                      const SizedBox(height: 12),
-                      _buildField(_usernameController, "GitHub Username", Icons.person),
-                      const SizedBox(height: 20),
-                      Container(
-                        width: double.infinity,
-                        height: 50,
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          gradient: LinearGradient(colors: [accentBlue, lightBlue]),
-                        ),
-                        child: ElevatedButton(
-                          onPressed: _isLoading ? null : _buildAPK,
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, foregroundColor: Colors.white),
-                          child: _isLoading
-                              ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                              : const Text("BUILD APK", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                      if (_apkDownloadUrl != null)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 12),
-                          child: Container(
-                            width: double.infinity,
-                            height: 50,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              gradient: LinearGradient(colors: [successGreen, Color(0xFF34D399)]),
-                            ),
-                            child: ElevatedButton(
-                              onPressed: _downloadAPK,
-                              style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, foregroundColor: Colors.white),
-                              child: const Text("DOWNLOAD & INSTALL", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 24),
-                if (_successMessage != null)
+        appBar: AppBar(
+          title: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: accentBlue.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+                child: const Icon(Icons.folder_zip, color: Colors.white),
+              ),
+              const SizedBox(width: 12),
+              const Text("Builder APK Flutter", style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+            ],
+          ),
+          backgroundColor: primaryDark,
+          elevation: 0,
+        ),
+        body: FadeTransition(
+          opacity: _fadeAnimation,
+          child: SlideTransition(
+            position: _slideAnimation,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                children: [
                   Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(color: successGreen.withOpacity(0.2), borderRadius: BorderRadius.circular(12)),
-                    child: Row(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(16),
+                      gradient: LinearGradient(colors: [primaryBlue, accentBlue]),
+                    ),
+                    child: Column(
                       children: [
-                        Icon(Icons.check_circle, color: successGreen),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text(_successMessage!, style: const TextStyle(color: Colors.white))),
+                        AnimatedBuilder(
+                          animation: _pulseAnimation,
+                          builder: (context, _) => Transform.scale(
+                            scale: _pulseAnimation.value,
+                            child: Container(
+                              width: 80, height: 80,
+                              decoration: BoxDecoration(color: Colors.white24, shape: BoxShape.circle),
+                              child: const Icon(Icons.folder_zip, color: Colors.white, size: 40),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        const Text("Builder APK Flutter", style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        const Text("Build APK dari file ZIP", style: TextStyle(color: Colors.white70)),
                       ],
                     ),
                   ),
-                const SizedBox(height: 24),
-                _buildTerminal(),
-              ],
+                  const SizedBox(height: 24),
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(color: cardDark, borderRadius: BorderRadius.circular(16)),
+                    child: Column(
+                      children: [
+                        GestureDetector(
+                          onTap: _isBuildRunning ? null : _pickZipFile,
+                          child: Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: cardDarker,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: accentBlue.withOpacity(0.5)),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.folder_zip, color: accentBlue, size: 30),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        _selectedZipFileName ?? "Pilih File ZIP",
+                                        style: TextStyle(
+                                          color: _selectedZipFileName != null ? Colors.white : Colors.white54,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      if (_selectedZipFileName != null)
+                                        Text(
+                                          "Klik untuk ganti file",
+                                          style: TextStyle(color: accentBlue, fontSize: 11),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                                Icon(Icons.upload_file, color: accentBlue),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildField(_ghpTokenController, "GitHub Token (ghp_)", Icons.vpn_key, obscure: true, enabled: !_isBuildRunning),
+                        const SizedBox(height: 12),
+                        _buildField(_usernameController, "GitHub Username", Icons.person, enabled: !_isBuildRunning),
+                        const SizedBox(height: 20),
+                        Container(
+                          width: double.infinity,
+                          height: 50,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            gradient: LinearGradient(colors: [accentBlue, lightBlue]),
+                          ),
+                          child: ElevatedButton(
+                            onPressed: (_isLoading || _isBuildRunning) ? null : _buildAPK,
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, foregroundColor: Colors.white),
+                            child: _isLoading || _isBuildRunning
+                                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                                : const Text("BUILD APK", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                          ),
+                        ),
+                        if (_apkDownloadUrl != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: Container(
+                              width: double.infinity,
+                              height: 50,
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                gradient: LinearGradient(colors: [successGreen, Color(0xFF34D399)]),
+                              ),
+                              child: ElevatedButton(
+                                onPressed: _downloadAPK,
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, foregroundColor: Colors.white),
+                                child: const Text("Download & Install", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  if (_successMessage != null)
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(color: successGreen.withOpacity(0.2), borderRadius: BorderRadius.circular(12)),
+                      child: Row(
+                        children: [
+                          Icon(Icons.check_circle, color: successGreen),
+                          const SizedBox(width: 12),
+                          Expanded(child: Text(_successMessage!, style: const TextStyle(color: Colors.white))),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 24),
+                  _buildTerminal(),
+                ],
+              ),
             ),
           ),
         ),
@@ -852,12 +1014,13 @@ jobs:
     );
   }
 
-  Widget _buildField(TextEditingController c, String hint, IconData icon, {bool obscure = false}) {
+  Widget _buildField(TextEditingController c, String hint, IconData icon, {bool obscure = false, bool enabled = true}) {
     return Container(
       decoration: BoxDecoration(color: cardDarker, borderRadius: BorderRadius.circular(12)),
       child: TextField(
         controller: c,
         obscureText: obscure,
+        enabled: enabled,
         style: const TextStyle(color: Colors.white),
         decoration: InputDecoration(
           hintText: hint,
