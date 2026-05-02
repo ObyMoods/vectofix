@@ -76,7 +76,7 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
     _slideController.forward();
   }
 
-  // Inisialisasi Notifikasi
+  // Inisialisasi Notifikasi - VERSI LAMA (kompatibel)
   Future<void> _initNotifications() async {
     flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
     
@@ -86,23 +86,17 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
     
     // Setup untuk iOS
     const DarwinInitializationSettings iosSettings =
-        DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-    );
+        DarwinInitializationSettings();
     
     const InitializationSettings initSettings = InitializationSettings(
       android: androidSettings,
       iOS: iosSettings,
     );
     
-    await flutterLocalNotificationsPlugin.initialize(
-      initSettings,
-      onDidReceiveNotificationResponse: _onNotificationTap,
-    );
+    // VERSI LAMA: tanpa onDidReceiveNotificationResponse
+    await flutterLocalNotificationsPlugin.initialize(initSettings);
     
-    // Buat notification channel untuk Android (wajib untuk Android 8.0+)
+    // Buat notification channel untuk Android
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
       'build_channel',
       'Build APK Notifications',
@@ -115,25 +109,11 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
         ?.createNotificationChannel(channel);
   }
 
-  // Handler ketika notifikasi diklik
-  void _onNotificationTap(NotificationResponse response) {
-    final payload = response.payload;
-    if (payload != null) {
-      if (payload == 'download_apk' && _apkDownloadUrl != null) {
-        _downloadAPK();
-      } else if (payload == 'view_logs') {
-        // Bisa tambahkan navigasi ke halaman log
-        _showSuccessDialog();
-      }
-    }
-  }
-
-  // Tampilkan notifikasi
+  // Tampilkan notifikasi - VERSI LAMA
   Future<void> _showNotification({
     required String title,
     required String body,
     required bool isSuccess,
-    String? payload,
   }) async {
     const AndroidNotificationDetails androidDetails = AndroidNotificationDetails(
       'build_channel',
@@ -149,12 +129,12 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       iOS: iosDetails,
     );
     
+    // VERSI LAMA: tanpa payload
     await flutterLocalNotificationsPlugin.show(
       DateTime.now().millisecond,
       title,
       body,
       details,
-      payload: payload ?? (isSuccess ? 'download_apk' : 'view_logs'),
     );
   }
 
@@ -365,14 +345,6 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       final workflowContent = '''name: Build Flutter APK
 
 on:
-  push:
-    branches:
-      - main
-      - master
-  pull_request:
-    branches:
-      - main
-      - master
   workflow_dispatch:
 
 jobs:
@@ -410,13 +382,13 @@ jobs:
         run: flutter pub get
 
       - name: Build APK
-        run: flutter build apk --release --split-per-abi
+        run: flutter build apk --release
 
-      - name: Upload APKs
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: all-apks
-          path: build/app/outputs/flutter-apk/*.apk
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
           retention-days: 30''';
       
       await _createFileInRepo(username, repoName, ghpToken, '.github/workflows/build.yml', workflowContent);
@@ -440,7 +412,7 @@ jobs:
         _addBuildLog("Build dimulai! Menunggu proses selesai (3-8 menit)...", isSuccess: true);
         await _showNotification(
           title: "Build APK Dimulai",
-          body: "Proses build APK sedang berjalan. Anda akan diberitahu saat selesai.",
+          body: "Proses build APK sedang berjalan.",
           isSuccess: true,
         );
         
@@ -482,14 +454,12 @@ jobs:
                         _apkDownloadUrl = downloadUrl;
                         _successMessage = "APK siap didownload!";
                       });
-                      _addBuildLog("APK siap didownload! Klik tombol DOWNLOAD APK", isSuccess: true);
+                      _addBuildLog("APK siap didownload!", isSuccess: true);
                       
-                      // Notifikasi berhasil
                       await _showNotification(
                         title: "✅ Build APK Berhasil!",
-                        body: "APK telah selesai dibangun. Klik notifikasi untuk mendownload.",
+                        body: "APK telah selesai dibangun.",
                         isSuccess: true,
-                        payload: 'download_apk',
                       );
                       
                       _showSuccessDialog();
@@ -503,13 +473,13 @@ jobs:
                     }
                   }
                 } else {
-                  _addBuildLog("Build gagal dengan status: $conclusion. Cek GitHub Actions.", isError: true);
+                  _addBuildLog("Build gagal dengan status: $conclusion.", isError: true);
                   await _showNotification(
                     title: "❌ Build APK Gagal",
                     body: "Build gagal dengan status: $conclusion",
                     isSuccess: false,
                   );
-                  _showErrorDialog("Build gagal dengan status: $conclusion\nCek GitHub Actions untuk detail.");
+                  _showErrorDialog("Build gagal dengan status: $conclusion\nCek GitHub Actions.");
                 }
               } else {
                 _addBuildLog("Build sedang berjalan... (${attempts * 5}s)");
@@ -523,7 +493,7 @@ jobs:
           _addBuildLog("Build memakan waktu lama. Cek GitHub Actions secara manual.", isError: true);
           await _showNotification(
             title: "Build APK Timeout",
-            body: "Build memakan waktu lama. Cek GitHub Actions secara manual.",
+            body: "Build memakan waktu lama.",
             isSuccess: false,
           );
         }
@@ -531,7 +501,7 @@ jobs:
         _addBuildLog("Gagal menjalankan workflow! Status: ${triggerResponse.statusCode}", isError: true);
         await _showNotification(
           title: "Build APK Gagal",
-          body: "Gagal menjalankan workflow GitHub!",
+          body: "Gagal menjalankan workflow!",
           isSuccess: false,
         );
       }
