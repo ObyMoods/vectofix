@@ -6,6 +6,8 @@ import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:open_filex/open_filex.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class BuildApkFlutter extends StatefulWidget {
   final String? sessionKey;
@@ -44,7 +46,6 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
   late Animation<Offset> _slideAnimation;
   late Animation<double> _pulseAnimation;
   
-  // Notifikasi
   late FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin;
 
   final Color primaryDark = const Color(0xFF0A0E27);
@@ -76,15 +77,12 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
     _slideController.forward();
   }
 
-  // Inisialisasi Notifikasi - VERSI LAMA (kompatibel)
   Future<void> _initNotifications() async {
     flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
     
-    // Setup untuk Android
     const AndroidInitializationSettings androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
     
-    // Setup untuk iOS
     const DarwinInitializationSettings iosSettings =
         DarwinInitializationSettings();
     
@@ -93,10 +91,8 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       iOS: iosSettings,
     );
     
-    // VERSI LAMA: tanpa onDidReceiveNotificationResponse
     await flutterLocalNotificationsPlugin.initialize(initSettings);
     
-    // Buat notification channel untuk Android
     const AndroidNotificationChannel channel = AndroidNotificationChannel(
       'build_channel',
       'Build APK Notifications',
@@ -109,7 +105,6 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
         ?.createNotificationChannel(channel);
   }
 
-  // Tampilkan notifikasi - VERSI LAMA
   Future<void> _showNotification({
     required String title,
     required String body,
@@ -129,7 +124,6 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
       iOS: iosDetails,
     );
     
-    // VERSI LAMA: tanpa payload
     await flutterLocalNotificationsPlugin.show(
       DateTime.now().millisecond,
       title,
@@ -138,7 +132,6 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
     );
   }
 
-  // Dialog sukses
   void _showSuccessDialog() {
     showDialog(
       context: context,
@@ -163,7 +156,7 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   icon: const Icon(Icons.download),
-                  label: const Text("DOWNLOAD APK"),
+                  label: const Text("DOWNLOAD & INSTALL"),
                   style: ElevatedButton.styleFrom(backgroundColor: successGreen),
                   onPressed: () {
                     Navigator.pop(context);
@@ -183,7 +176,6 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
     );
   }
 
-  // Dialog gagal
   void _showErrorDialog(String errorMessage) {
     showDialog(
       context: context,
@@ -205,6 +197,69 @@ class _BuildApkFlutterState extends State<BuildApkFlutter> with TickerProviderSt
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text("Tutup", style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showInstallDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: cardDark,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.system_update, color: Colors.blue),
+            SizedBox(width: 10),
+            Text("Instalasi APK", style: TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: const Text(
+          "APK sudah diunduh. Ikuti petunjuk di layar untuk menginstal aplikasi.\n\n"
+          "Jika diminta, aktifkan 'Izinkan instalasi dari sumber ini'.",
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK", style: TextStyle(color: Colors.white70)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showShareDialog(File apkFile) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: cardDark,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.share, color: Colors.orange),
+            SizedBox(width: 10),
+            Text("Bagikan APK", style: TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: const Text(
+          "Tidak bisa membuka installer. Bagikan file APK?",
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Batal", style: TextStyle(color: Colors.white70)),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await Share.shareXFiles([XFile(apkFile.path)], text: 'APK File');
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: successGreen),
+            child: const Text("BAGIKAN"),
           ),
         ],
       ),
@@ -476,10 +531,10 @@ jobs:
                   _addBuildLog("Build gagal dengan status: $conclusion.", isError: true);
                   await _showNotification(
                     title: "❌ Build APK Gagal",
-                    body: "Build gagal dengan status: $conclusion",
+                    body: "Build gagal: $conclusion",
                     isSuccess: false,
                   );
-                  _showErrorDialog("Build gagal dengan status: $conclusion\nCek GitHub Actions.");
+                  _showErrorDialog("Build gagal: $conclusion\nCek GitHub Actions.");
                 }
               } else {
                 _addBuildLog("Build sedang berjalan... (${attempts * 5}s)");
@@ -552,12 +607,41 @@ jobs:
       final tempDir = await getTemporaryDirectory();
       final file = File('${tempDir.path}/app_${DateTime.now().millisecondsSinceEpoch}.apk');
       await file.writeAsBytes(response.bodyBytes);
-      await Share.shareXFiles([XFile(file.path)], text: 'APK File');
       _addBuildLog("APK berhasil diunduh!", isSuccess: true);
+      
+      // ✅ Install APK langsung
+      await _installAPK(file);
+      
     } catch (e) {
       _addBuildLog("Error download APK: $e", isError: true);
     } finally {
       setState(() { _isLoading = false; });
+    }
+  }
+
+  // ✅ METHOD INSTALL APK
+  Future<void> _installAPK(File apkFile) async {
+    try {
+      _addBuildLog("Meminta izin instalasi...");
+      
+      if (await Permission.requestInstallPackages.isDenied) {
+        await Permission.requestInstallPackages.request();
+      }
+      
+      _addBuildLog("Membuka APK untuk instalasi...");
+      
+      final result = await OpenFilex.open(apkFile.path);
+      
+      if (result.type == ResultType.done) {
+        _addBuildLog("Instalasi dimulai!", isSuccess: true);
+        _showInstallDialog();
+      } else {
+        _addBuildLog("Gagal membuka APK: ${result.message}", isError: true);
+        _showShareDialog(apkFile);
+      }
+    } catch (e) {
+      _addBuildLog("Error install APK: $e", isError: true);
+      _showShareDialog(apkFile);
     }
   }
 
@@ -656,7 +740,7 @@ jobs:
                         ),
                       ),
                       const SizedBox(height: 16),
-                      const Text("Flutter APK Builder", style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+                      const Text("Builder APK Flutter", style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
                       const SizedBox(height: 8),
                       const Text("Build APK dari file ZIP", style: TextStyle(color: Colors.white70)),
                     ],
@@ -694,7 +778,7 @@ jobs:
                                     ),
                                     if (_selectedZipFileName != null)
                                       Text(
-                                        "Tap untuk ganti file",
+                                        "Klik untuk ganti file",
                                         style: TextStyle(color: accentBlue, fontSize: 11),
                                       ),
                                   ],
@@ -738,7 +822,7 @@ jobs:
                             child: ElevatedButton(
                               onPressed: _downloadAPK,
                               style: ElevatedButton.styleFrom(backgroundColor: Colors.transparent, foregroundColor: Colors.white),
-                              child: const Text("DOWNLOAD APK", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                              child: const Text("DOWNLOAD & INSTALL", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                             ),
                           ),
                         ),
