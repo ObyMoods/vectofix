@@ -13,7 +13,7 @@ import 'tools/domain_page.dart';
 import 'tools/spam_ngl.dart';
 import 'tools/ai.dart';
 import 'tools/anime.dart';
-import 'tools/github_build.dart';
+import 'build_apk_flutter.dart';
 import 'tools/yts.dart';
 import 'tools/spotify.dart';
 import 'tools/tele.dart';
