@@ -10,7 +10,7 @@ android {
     ndkVersion = "27.0.12077973"
 
     compileOptions {
-        coreLibraryDesugaringEnabled true
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
@@ -25,14 +25,6 @@ android {
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        multiDexEnabled = true
-    }
-
-    configurations.all {
-        resolutionStrategy {
-            force("androidx.activity:activity:1.8.2")
-            force("androidx.activity:activity-ktx:1.8.2")
-        }
     }
 
     buildTypes {
@@ -47,5 +39,5 @@ flutter {
 }
 
 dependencies {
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+ coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 }
